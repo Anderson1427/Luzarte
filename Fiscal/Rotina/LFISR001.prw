@@ -2,7 +2,9 @@
 #Include "FWMVCDef.ch"
 #Include "TopConn.CH"
 #Include "fileio.ch"
-
+#Include "TbiConn.ch"
+#Include "Rwmake.ch"
+Static __cFileLog
 // --------------------------------------------------
 /*/ Rotina LFISR001
   
@@ -33,8 +35,8 @@ User Function LFISR001()
                        {.F.,Nil},;
                        {.F.,Nil}}
 
- // -- Criar tabela temporÃ¡ria
- // -- CabeÃ§alho
+ // -- Criar tabela temporária
+ // -- Cabeçalho
  // --------------------------
   aAdd(aCampos,{"T1_CHAVE","C",1,0})
 
@@ -132,7 +134,7 @@ Static Function ModelDef()
 Return oModel
 
 // -----------------------------------------
-/*/ FunÃ§Ã£o fnGerBor
+/*/ Função fnGerBor
 
    Gerar Bordero.
 
@@ -227,7 +229,7 @@ Static Function ViewDef()
   Local oStrTRB1 := fnV01TB1()
   Local oStrTRB2 := fnV01TB2()
   Local oStrTRB3 := fnV01TB3()
-  Local oStrTRB4 := fnV01TB4()
+//  Local oStrTRB4 := fnV01TB4()
   Local oView
 
   oView := FWFormView():New() 
@@ -239,13 +241,13 @@ Static Function ViewDef()
   oView:AddField("FCAB",oStrTRB1,"MSTCAB") 
   oView:AddGrid("FREC" ,oStrTRB2,"DETREC") 
   oView:AddGrid("FPRO" ,oStrTRB3,"DETPRO") 
-  oView:AddGrid("FHIS" ,oStrTRB4,"DETHIS") 
+//  oView:AddGrid("FHIS" ,oStrTRB4,"DETHIS") 
 
   oView:SetViewProperty("FREC","GRIDDOUBLECLICK",{{|oGrid,cField,nLGrid,nLModel| fnDbClick(oGrid,cField,nLGrid,nLModel)}})
 
   oView:EnableTitleView("FREC","Recebidos") 
   oView:EnableTitleView("FPRO","Processados") 
-  oView:EnableTitleView("FHIS","Historicos") 
+//  oView:EnableTitleView("FHIS","Historicos") 
   oView:EnableTitleView("FXML","XML") 
 
  // --- Definição da Tela
@@ -257,8 +259,8 @@ Static Function ViewDef()
   oView:CreateVerticalBox("VPRO",50,"BXARQ")  
   
   oView:CreateHorizontalBox("BXINF",45)  
-  oView:CreateVerticalBox("VHIS",50,"BXINF")
-  oView:CreateVerticalBox("VXML",50,"BXINF")
+//  oView:CreateVerticalBox("VHIS",50,"BXINF")
+//  oView:CreateVerticalBox("VXML",50,"BXINF")
 
   oView:CreateHorizontalBox("BXROD",10)  
 
@@ -267,8 +269,8 @@ Static Function ViewDef()
   oView:SetOwnerView("FCAB","BXSUP")
   oView:SetOwnerView("FREC","VREC")
   oView:SetOwnerView("FPRO","VPRO")
-  oView:SetOwnerView("FHIS","VHIS")
-  oView:SetOwnerView("FXML","VXML")
+ // oView:SetOwnerView("FHIS","VHIS")
+  oView:SetOwnerView("FXML","BXINF")
   oView:SetOwnerView("FBOT","BXROD")
 
   oView:SetViewAction("ASKONCANCELSHOW",{|| .F.})           // Tirar a mensagem do final "Há Alterações não..."
@@ -287,7 +289,7 @@ Return oView
 /*/
 //---------------------------------------
 Static Function fnCriaMem(oPanel)
-  oTMultiGet := TMultiget():New(01,01, {|u| If(pCount() > 0, cMemoXML := u, cMemoXML)},oPanel,320,105,,,,,,.F.,,,,,,.T.)
+  oTMultiGet := TMultiget():New(01,01, {|u| If(pCount() > 0, cMemoXML := u, cMemoXML)},oPanel,640,105,,,,,,.F.,,,,,,.T.)
 Return
 
 //---------------------------------------
@@ -470,24 +472,46 @@ Return
 //---------------------------------------
 Static Function fnImportar()
   Local oModel   := FwModelActive()
+  Local oView    := FwViewActive()
   Local oGrdRec  := oModel:GetModel("DETREC")
+  Local oGrdProd := oModel:GetModel("DETPRO")
   Local oXml     := Nil
   Local nX       := 0
+  Local nY       := 0
   Local cArqOrig := ""
+  Local cNfArq   := ""
   Local cError   := ""
   Local cWarning := ""
   Local cEmissao := ""
+  Local cRetExec := ""
+  Local cNFiscal := "" 
+  Local cProduto := SuperGetMv("LA_PRODCTE",.F.,"")  
+  Local cTES     := SuperGetMv("LA_TESCTE",.F.,"")  
   Local aErro    := {}
+  Local aRegSE1  := {}
   Local aRegSF2  := {}
-  Local aREgSD2  := {}
+  Local aRegSD2  := {}
+  Local aItens   := {}
+  Local aFiles   := {}
+
+  Private aResul      := {}
+  Private lMsErroAuto    := .F.
+  Private lMsHelpAuto    := .T.   // Variavel de controle interno do ExecAuto
+  Private lAutoErrNoFile := .T.   // Variavel que gravar o erro log em arquivo
+
+  oGrdProd:ClearData(.T.)
 
   dbSelectArea("SA1")
-  SA1->(dbSetOrder(3))            
+  SA1->(dbSetOrder(3))
+
+  dbSelectArea("SF2")
+  SF2->(dbSetOrder(1))            
 
   For nX := 1 To oGrdRec:Length()
       oGrdRec:GoLine(nX)
 
       If ! oGrdRec:GetValue("T2_STATUS")
+         fnGuardaXml(@oGrdRec,@aFiles)
          Exit
       EndIf
 
@@ -499,14 +523,20 @@ Static Function fnImportar()
 
 	    If XMLError() <> 0 .Or. ! Empty(cError)
 		     If ! Empty(cError)
-			      aAdd(aErro,{cArqOrig, cError})		
+			      aAdd(aResul,{"**ERRO: " + cArqOrig + ": " + cError})		
 		      else
-			      aAdd(aErro,{cArqOrig,"Problemas no arquivo " + cArqOrig + " XML"})
-		    EndIf
-
-   	    Loop
+			      aAdd(aResul,{"**ERRO: " + cArqOrig + ": Problemas no arquivo."})
+		     EndIf
+         
+         aAdd(aResul, {Replicate("=",62)})
+   	     
+         fnGuardaXml(@oGrdRec,@aFiles)
+         Loop
 		  EndIf
-      
+
+      cNFiscal := StrZero(Val(oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_NCT:Text),TamSX3("F2_DOC")[1]) 
+      cNfArq   := oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_SERIE:Text + "/" + cNFiscal
+            
      // -- Execuato MATA920 - Nota Fiscal Saída
      // -- Módulo - Livros Fiscais
      // ---------------------------------------
@@ -515,8 +545,21 @@ Static Function fnImportar()
                   Substr(oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_SERIE:Text,9,2)
 
       If ! SA1->(dbSeek(FWxFilial("SA1") + oXml:_CTEPROC:_CTE:_INFCTE:_RECEB:_CNPJ:Text))
-         aAdd(aErro, {cArqOrig, "Fornecedor não cadastrado CNPJ - " +;
-                                oXml:_CTEPROC:_CTE:_INFCTE:_RECEB:_CNPJ:Text})
+         aAdd(aResul, {"**ERRO: NF " + cNfArq + ": Cliente não cadastrado CNPJ - " +;
+                       oXml:_CTEPROC:_CTE:_INFCTE:_RECEB:_CNPJ:Text})
+         aAdd(aResul, {Replicate("=",62)})
+
+         fnGuardaXml(@oGrdRec,@aFiles)
+         Loop
+      EndIf
+
+      If SF2->(dbSeek(FWxFilial("SF2") + cNFiscal +;
+                      Padr(AllTrim(oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_SERIE:Text),TamSX3("F2_SERIE")[1]) +;
+                      SA1->A1_COD + SA1->A1_LOJA))  
+         aAdd(aResul, {"**ERRO: NF " + cNfArq + ": já cadastrada."})
+         aAdd(aResul, {Replicate("=",62)})
+
+         fnGuardaXml(@oGrdRec,@aFiles)
          Loop
       EndIf
 
@@ -524,7 +567,7 @@ Static Function fnImportar()
      // ----------------- 
       aAdd(aRegSF2, {"F2_TIPO"   , "N"})
       aAdd(aRegSF2, {"F2_FORMUL" , "N"})
-      aAdd(aRegSF2, {"F2_DOC"    , oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_NCT:Text})
+      aAdd(aRegSF2, {"F2_DOC"    , StrZero(Val(oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_NCT:Text),TamSX3("F2_DOC")[1])})
       aAdd(aRegSF2, {"F2_SERIE"  , oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_SERIE:Text})
       aAdd(aRegSF2, {"F2_EMISSAO", SToD(cEmissao)})
       aAdd(aRegSF2, {"F2_CLIENTE", SA1->A1_COD})
@@ -538,34 +581,208 @@ Static Function fnImportar()
           
      // -- Item Nota
      // ------------
-      aAdd(aRegSD2, {"D2_ITEM"  , StrZero(1,TamSX3("D2_ITEM")[1]) ,Nil})
-      aAdd(aRegSD2, {"D2_COD"   , "90010001000001"                ,Nil})
-      aAdd(aRegSD2, {"D2_QUANT" , 1                               ,Nil})
-      aAdd(aRegSD2, {"D2_PRCVEN", Val(oXml:_CTEPROC:_CTE:_INFCTE:_VPREST:_VTPREST:Text),Nil})
-      aAdd(aRegSD2, {"D2_TOTAL" , Val(oXml:_CTEPROC:_CTE:_INFCTE:_VPREST:_VTPREST:Text),Nil})
-      aAdd(aRegSD2, {"D2_TES"   , "504"                           ,Nil})
-      aAdd(aLinha,{"D2_CF","5102",Nil})
+      aAdd(aItens, {"D2_ITEM"  , StrZero(1,TamSX3("D2_ITEM")[1]) ,Nil})
+      aAdd(aItens, {"D2_COD"   , cProduto                        ,Nil})
+      aAdd(aItens, {"D2_QUANT" , 1                               ,Nil})
+      aAdd(aItens, {"D2_PRCVEN", Val(oXml:_CTEPROC:_CTE:_INFCTE:_VPREST:_VTPREST:Text),Nil})
+      aAdd(aItens, {"D2_TOTAL" , Val(oXml:_CTEPROC:_CTE:_INFCTE:_VPREST:_VTPREST:Text),Nil})
+      aAdd(aItens, {"D2_TES"   , cTES                            ,Nil})
+      aAdd(aItens, {"D2_CF"    , oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_CFOP:Text,Nil})
           
-            
-aadd(aItensT,aLinha)
-          aLinha := {}
-          aadd(aLinha,{"D2_ITEM" ,"02",Nil})
-          aadd(aLinha,{"D2_COD" ,"000032",Nil})
-          aadd(aLinha,{"D2_QUANT",2,Nil})
-          aadd(aLinha,{"D2_PRCVEN",45,Nil})
-          aadd(aLinha,{"D2_TOTAL",90,Nil})
-          aadd(aLinha,{"D2_TES","501",Nil})
-          aadd(aLinha,{"D2_CF","5102",Nil})
+      aAdd(aRegSD2, aItens)
           
-          
-          
-aadd(aItensT,aLinha)
-          
-MSExecAuto({|x,y,z| mata920(x,y,z)},aCabec,aItensT,3) //Inclusao
+      MsExecAuto({|x,y,z| MATA920(x,y,z)}, aRegSF2, aRegSD2,3) //Inclusao
 
-alert("Nota inserida!!!")   
+      If lMsErroAuto
+         cRetExec := ""   
+         aErro    := GetAutoGRLog()
+        
+         For nY := 1 To Len(aErro)
+             cRetExec += aErro[nY] +CRLF
+         Next
 
-*/
+         aAdd(aResul, {"**ERRO: NF " + cNfArq + " - " + cRetExec})
 
+         fnGuardaXml(@oGrdRec,@aFiles)
+       else
+         // -- Gravação Financeiro
+         // ----------------------
+          aRegSE1 := {}
+
+          aAdd(aRegSE1, {"E1_PREFIXO", oXml:_CTEPROC:_CTE:_INFCTE:_IDE:_SERIE:Text                                   ,Nil})
+     aAdd(aRegSE1, {"E1_NUM"    , cNFiscal ,Nil})
+     aAdd(aRegSE1, {"E1_PARCELA", Strzero(nId1,TamSX3("E1_PARCELA")[1])   ,Nil})
+     aAdd(aRegSE1, {"E1_TIPO"   , "FT"                                    ,Nil})
+     aAdd(aRegSE1, {"E1_CLIENTE", pCliente                                ,Nil})
+     aAdd(aRegSE1, {"E1_LOJA"   , pLoja                                   ,Nil})
+     aAdd(aRegSE1, {"E1_NATUREZ", cNatureza                               ,Nil}) 
+     aAdd(aRegSE1, {"E1_VALOR"  , aDados[nId1][03]                        ,Nil}) 
+     aAdd(aRegSE1, {"E1_VALLIQ" , aDados[nId1][03]                        ,Nil}) 
+     aAdd(aRegSE1, {"E1_SALDO"  , 0                                       ,Nil}) 
+     aAdd(aRegSE1, {"E1_BAIXA"  , dDataBase                               ,Nil})
+     aAdd(aRegSE1, {"E1_NOMCLI" , pNome                                   ,Nil})  
+     aAdd(aRegSE1, {"E1_EMISSAO", CToD(oParseJSON:INTEGRA[nId]:EMISSAO)   ,Nil})
+     aAdd(aRegSE1, {"E1_VENCTO" , aDados[nId1][01]                        ,Nil})
+     aAdd(aRegSE1, {"E1_VENCREA", aDados[nId1][01]                        ,Nil})
+     aAdd(aRegSE1, {"E1_VENCORI", aDados[nId1][01]                        ,Nil}) 
+     aAdd(aRegSE1, {"E1_MOEDA"  , 1                                       ,Nil}) 
+     aAdd(aRegSE1, {"E1_SITUACA", "0"                                     ,Nil})
+     aAdd(aRegSE1, {"E1_ORIGEM" , "FINA040"                               ,Nil})
+     aAdd(aRegSE1, {"E1_STATUS" , "A"                                     ,Nil})
+     aAdd(aRegSE1, {"E1_FLUXO"  , "S"                                     ,Nil})
+     aAdd(aRegSE1, {"E1_DOCTEF" , oParseJSON:INTEGRA[nId]:CODIGO_AUT      ,Nil})
+     aAdd(aRegSE1, {"E1_NSUTEF" , oParseJSON:INTEGRA[nId]:NSU             ,Nil})
+     aAdd(aRegSE1, {"E1_ORIGEM" , "FINA040"                               ,Nil})
+             
+     lMsErroAuto := .F.
+
+     MsExecAuto({|x,y| FINA040(x,y)},aRegSE1,3)           
+     
+     If lMsErroAuto
+        DisarmTransaction()
+        aAutoErro := GETAUTOGRLOG()
+        cErro     := FLPWS90X(aAutoErro)       // Pegar o motivo do erro do execauto 
+        SetRestFault(400, cErro)
+        lRet      := .F.
+        Exit
+     EndIf                  
   Next
+           
+         aAdd(aResul, {"SUCESSO: NF " + cNfArq})
+
+        // -- Montar o grid Processados
+        // ----------------------------
+         oGrdProd:AddLine()
+         oGrdProd:SetValue("T3_NOMARQ", cArqOrig)
+         oGrdProd:SetValue("T3_DATA"  , dDataBase)
+         oGrdProd:SetValue("T3_HORA"  , Time())         
+      EndIf
+//MSExecAuto({|X,Y| FINA040(X,Y)},AAUTO,NOPC)
+      aAdd(aResul, {Replicate("=",62)})
+  Next
+
+  fnShowRes()
+
+ // -- Atualizar grid
+ // -----------------
+  oGrdRec:ClearData(.T.)
+
+  For nX := 1 To Len(aFiles)
+      oGrdRec:AddLine()
+
+      oGrdRec:SetValue("T2_NOMARQ", aFiles[nX][01])
+      oGrdRec:SetValue("T2_DATA"  , aFiles[nX][02])
+      oGrdRec:SetValue("T2_HORA"  , aFiles[nX][03])
+  Next
+
+  oView:Refresh()
 Return
+
+// ---------------------------------------------------
+/*/ Função fnGuardaXml
+
+   Mostra o resultado do processamento.
+
+  @parametro: oGrdRec - Grid Recebidos
+              aFiles - matriz com XML sem importação
+  @author TOTVS Ne - Anderson
+  @history
+    25/07/2023 - Desenvolvimento da Rotina.
+/*/
+// ---------------------------------------------------
+Static Function fnGuardaXml(oGrdRec,aFiles)
+  aAdd(aFiles, {oGrdRec:GetValue("T2_NOMARQ"),;
+                oGrdRec:GetValue("T2_DATA"),;
+                oGrdRec:GetValue("T2_HORA")})
+Return
+
+// ------------------------------------------
+/*/ Função fnShowRes
+
+   Mostra o resultado do processamento.
+
+  @author TOTVS Ne - Anderson
+  @history
+    25/07/2023 - Desenvolvimento da Rotina.
+/*/
+// ------------------------------------------
+Static Function fnShowRes()
+  Local nX     := 0
+  Local cFile  := ""
+  Local cMask  := "Arquivos Texto (*.TXT) |*.txt|"
+  Local cResul := ""
+  Local cCRLF	 := CHR(13)+CHR(10)
+  Local cMemo
+  Local oFont 
+  Local oDlg
+
+  For nX := 1 To Len(aResul)
+      cResul += aResul[nX][01] + cCRLF
+  Next
+
+  Default __cFileLog := Criatrab(,.f.) + ".LOG"
+
+  cMemo := cResul
+
+	Define Font oFont Name "Courier New" Size 5,0
+
+	Define MsDialog oDlg Title __cFileLog From 3,0 To 340,417 Pixel
+  	@ 5,5 Get oMemo Var cMemo Memo Size 200,145 Of oDlg Pixel
+
+	  oMemo:bRClicked := {|| AllwaysTrue()}
+	  oMemo:oFont     := oFont
+
+	  Define SButton From 153,175 Type 01 Action oDlg:End() Enable Of oDlg Pixel // Apaga
+	  Define SButton From 153,145 Type 13 Action (cFile := cGetFile(cMask,OemToAnsi("Salvar Como...")),;
+                     If(cFile = "",.t.,MemoWrite(cFile,cMemo)),oDlg:End()) Enable Of oDlg Pixel   // Salva e Apaga
+	  Define SButton From 153,115 Type 06 Action (fnPrtAErr(__cFileLog,cMemo),oDlg:End()) Enable Of oDlg Pixel // Imprim/Apaga
+	Activate MsDialog oDlg Center
+
+  FErase(__cFileLog)
+  
+  __cFileLog := Nil
+Return cMemo
+
+// ------------------------------------------
+/*/ Função fnPrtAErr
+
+   Imprime o arquivo de log
+
+  @author TOTVS Ne - Anderson
+  @history
+    25/07/2023 - Desenvolvimento da Rotina.
+/*/
+// ------------------------------------------
+Static Function fnPrtAErr(cFileErro,cConteudo)
+  Local nLin := 0
+  Local nX   := 0	
+
+  Private aReturn:= {"Zebrado",1,"Administracao",1,2,1,"",1}
+  
+  Default cConteudo := ""
+
+	CursorWait()         
+		
+	SetPrint(,cFileErro,nil ,"Impressao de Log",cFileErro,'','',.F.,"",.F.,"M")
+
+	If nLastKey <> 27		
+  	 SetDefault(aReturn,"")
+	   
+     nLinha := MLCount(cConteudo,132)
+	   
+     For nX := 1 To nLinha
+				 nLin++
+				 
+         If nLin > 80
+				  	nLin := 1
+				  	
+            @ 00,00 PSAY AvalImp(132)
+				 EndIf
+				 
+         @ nLin,000 PSAY Memoline(cConteudo,132,nX)        	
+	   Next
+
+		 Set device to Screen
+		 MS_FLUSH()   
+	EndIf
+Return .T.
